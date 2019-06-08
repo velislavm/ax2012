@@ -1,0 +1,320 @@
+﻿Exportfile for AOT version 1.0 or later
+Formatversion: 1
+
+***Element: JOB
+
+; Microsoft Dynamics AX Job: VM_CreateLabels unloaded
+; --------------------------------------------------------------------------------
+  JOBVERSION 1
+  
+  SOURCE #VM_CreateLabels
+    #// This job prompts for a project name and then examines the properties of the object in the project for text constants.
+    #// If a text constant is found, then a new label is created for it and the text on the object's property is replaced with the new (temp) label.
+    #// If a label already exists for the given text constant, then existing label will be reused.
+    #// As a precaution, the label file must be manually checked-out before running the job.
+    #static void VM_CreateLabels(Args _args)
+    #{
+    #    str                                 aotPath;
+    #
+    #    TreeNode                            treeNode, treeNodeTest, projTreeNode;
+    #    boolean                             more, isChild;
+    #    Struct                              nodeData;
+    #    List                                nodeDataList;
+    #    Enumerator                          en;
+    #    ProjectNode                         projectNode, currentProjectNode;
+    #    TreeNodeIterator                    tnIt;
+    #
+    #    int                                 nodeCnt;
+    #    Map                                 projNodeList  = new Map(Types::Integer, Types::Class);
+    #    Map                                 nodeTypeSetup = new Map(Types::String,  Types::Class);
+    #
+    #    SysContextMenu                      sysContextMenu;
+    #    SysLabelEdit                        sysLabelEdit = new SysLabelEdit();
+    #    SysVersionControlSystem             sysVersionControlSystem;
+    #    SysLabelFile                        sysLabelFile;
+    #
+    #    LabelId                             labelId;
+    #    container                           labelPriority;
+    #    str                                 labelText, labelComment, labelFile, languageId, projectName;
+    #    Set                                 labelSet;
+    #    SetEnumerator                       se;
+    #
+    #    System.Xml.XPath.XPathDocument      doc;
+    #    System.Xml.XmlReader                reader;
+    #    System.IO.StringReader              stringReader;
+    #    System.Xml.XPath.XPathNavigator     nav, current;
+    #    System.Xml.XPath.XPathNodeIterator  it;
+    #    str                                 value, name;
+    #
+    #    str xml = @'
+    #    <AOT>
+    #        <Map>
+    #            <e Property="Label"                  Path="\\Data Dictionary\\Maps\\%1" />
+    #            <e Property="DeveloperDocumentation" Path="\\Data Dictionary\\Maps\\%1" Comment="{locked}" />
+    #            <e Property="HelpText"               Path="\\Data Dictionary\\Maps\\%1\\Fields" IsChild="1" />
+    #            <e Property="Label"                  Path="\\Data Dictionary\\Maps\\%1\\Fields" IsChild="1" />
+    #            <e Property="Label"                  Path="\\Data Dictionary\\Maps\\%1\\Field Groups" IsChild="1" SkipMask="&lt;Auto" />
+    #        </Map>
+    #        <Table>
+    #            <e Property="Label"                  Path="\\Data Dictionary\\Tables\\%1" />
+    #            <e Property="DeveloperDocumentation" Path="\\Data Dictionary\\Tables\\%1" Comment="{locked}" />
+    #            <e Property="HelpText"               Path="\\Data Dictionary\\Tables\\%1\\Fields" IsChild="1" />
+    #            <e Property="Label"                  Path="\\Data Dictionary\\Tables\\%1\\Fields" IsChild="1" />
+    #            <e Property="Label"                  Path="\\Data Dictionary\\Tables\\%1\\Field Groups" IsChild="1" SkipMask="&lt;Auto" />
+    #        </Table>
+    #        <ExtendedType>
+    #            <e Property="Label"    Path="\\Data Dictionary\\Extended Data Types\\%1" />
+    #            <e Property="HelpText" Path="\\Data Dictionary\\Extended Data Types\\%1" />
+    #        </ExtendedType>
+    #        <DisplayTool>
+    #            <e Property="Label"    Path="\\Menu Items\\Display\\%1" />
+    #            <e Property="HelpText" Path="\\Menu Items\\Display\\%1" />
+    #        </DisplayTool>
+    #        <OutputTool>
+    #            <e Property="Label"    Path="\\Menu Items\\Output\\%1" />
+    #            <e Property="HelpText" Path="\\Menu Items\\Output\\%1" />
+    #        </OutputTool>
+    #        <ActionTool>
+    #            <e Property="Label"    Path="\\Menu Items\\Action\\%1" />
+    #            <e Property="HelpText" Path="\\Menu Items\\Action\\%1" />
+    #        </ActionTool>
+    #        <Enum>
+    #            <e Property="Label" Path="\\Data Dictionary\\Base Enums\\%1" />
+    #            <e Property="Help"  Path="\\Data Dictionary\\Base Enums\\%1" />
+    #            <e Property="Label" Path="\\Data Dictionary\\Base Enums\\%1" IsChild="1" />
+    #        </Enum>
+    #        <Form>
+    #            <e Property="HelpText" Path="\\Forms\\%1\\Designs\\DesignList" IsChild="1" />
+    #            <e Property="Label"    Path="\\Forms\\%1\\Designs\\DesignList" IsChild="1" />
+    #            <e Property="Caption"  Path="\\Forms\\%1\\Designs\\DesignList" IsChild="1" />
+    #            <e Property="Caption"  Path="\\Forms\\%1\\Designs\\DesignList" />
+    #        </Form>
+    #        <SecPrivilege>
+    #            <e Property="Description" Path="\\Security\\Privileges\\%1" />
+    #            <e Property="Label"       Path="\\Security\\Privileges\\%1" />
+    #        </SecPrivilege>
+    #    </AOT>';
+    #
+    #
+    #    Dialog          dialog = new dialog('Select shared project, label file, and language');
+    #    DialogField     dfProj, dfLabelFile, dfLanguageId;
+    #
+    #    str getType(treeNode _tn){ return _tn.AOTtypeStr() == 'MAP' ? 'Map' : enum2str(_tn.utilElement().recordType); }
+    #
+    #    if (SysContextMenu::startedFrom(_args))
+    #    {
+    #        treeNode = _args.parmObject().first();
+    #        if (treeNode.AOTtypeStr() == 'PRN')
+    #        {
+    #            projectName = treeNode.AOTname();
+    #        }
+    #    }
+    #
+    #
+    #    dfProj       = dialog.addFieldValue(extendedTypeStr(SharedProjectName), projectName, 'Shared project name');
+    #    dfLabelFile  = dialog.addFieldValue(extendedTypeStr(LabelModuleId), '???');					// TODO: replace ??? with actual label file
+    #    dfLanguageId = dialog.addFieldValue(extendedTypeStr(languageId), 'en-us');
+    #
+    #    if (dialog.run())
+    #    {
+    #        projectName = dfProj.value();
+    #        labelFile = dfLabelFile.value();
+    #        languageId = dfLanguageId.value();
+    #
+    #        if (! (projectName && labelFile && languageId))
+    #        {
+    #            throw info('Missing paramter(s). Operaton canceled.');
+    #        }
+    #
+    #        labelPriority = [labelFile];
+    #    }
+    #    else
+    #    {
+    #        return;
+    #    }
+    #
+    #    sysLabelFile = SysLabelFile::newLanguageModule(languageId, labelFile);
+    #
+    #    sysVersionControlSystem = versionControl.parmSysVersionControlSystem();
+    #
+    #    if (sysVersionControlSystem)
+    #    {
+    #        if (! sysVersionControlSystem.allowEdit(sysLabelFile))
+    #        {
+    #            throw error(strFmt('Label file "%1" for language %2 is not be checked out. Try to check out the file manually.', sysLabelFile.parmModuleId(), sysLabelFile.parmLanguageId()), '', SysInfoAction_Formrun::newFormname((formStr(SysLabelSearch))));
+    #        }
+    #    }
+    #
+    #    projectNode = infolog.projectRootNode().AOTfindChild('Shared').AOTfindChild(projectName);
+    #    currentProjectNode = projectNode.loadForInspection();
+    #
+    #    tnIt = currentProjectNode.AOTiterator();
+    #    projTreeNode = tnIt.next();
+    #
+    #    while (projTreeNode)
+    #    {
+    #        if (projTreeNode.AOTtypeStr() == 'PGR')
+    #        {
+    #            nodeCnt++;
+    #            projNodeList.insert(nodeCnt, treeNode::findNode(projTreeNode.treeNodePath()));
+    #        }
+    #        else
+    #        {
+    #            setPrefix(strFmt('Examining: %1.', projTreeNode.AOTname()));
+    #
+    #            if (nodeTypeSetup && nodeTypeSetup.exists(getType(projTreeNode)))
+    #            {
+    #                nodeDataList = NodeTypeSetup.lookup(getType(projTreeNode));
+    #            }
+    #            else
+    #            {
+    #                stringReader = new System.IO.StringReader(xml);
+    #
+    #                reader = System.Xml.XmlReader::Create(stringReader);
+    #
+    #                doc = new System.Xml.XPath.XPathDocument(reader);
+    #
+    #                nav = doc.CreateNavigator();
+    #
+    #                it = nav.Select(strFmt("//%1/e", getType(projTreeNode)));
+    #
+    #                nodeDataList = new List(Types::Class);
+    #
+    #                while (it.MoveNext())
+    #                {
+    #                    current = it.get_Current();
+    #
+    #                    if (current.get_HasAttributes())
+    #                    {
+    #                        nodeData = new Struct();
+    #
+    #                        for (more = current.MoveToFirstAttribute(); more; more=current.MoveToNextAttribute())
+    #                        {
+    #                            value = current.get_Value();
+    #                            name  = current.get_Name();
+    #                            nodeData.add(name, value);
+    #                        }
+    #
+    #                        nodeDataList.addEnd(nodeData);
+    #                    }
+    #                }
+    #
+    #                if (nodeDataList)
+    #                {
+    #                    nodeTypeSetup.insert(getType(projTreeNode), nodeDataList);
+    #                }
+    #            }
+    #
+    #
+    #            en = nodeDataList.getEnumerator();
+    #            while (en.moveNext())
+    #            {
+    #                nodeData = en.current();
+    #
+    #                aotPath = nodeData.value('Path');
+    #
+    #                treeNode = treeNode::findNode(strFmt(aotPath, projTreeNode.AOTname()));
+    #
+    #                if (nodeData.exists('IsChild') && nodeData.value('IsChild'))
+    #                {
+    #                    treeNode = treeNode.AOTfirstChild();
+    #                    isChild = true;
+    #                }
+    #                else
+    #                {
+    #                    isChild = false;
+    #                }
+    #
+    #                if (treeNode && nodeData.exists('Property'))
+    #                {
+    #                    do
+    #                    {
+    #                        if (!nodeData.exists('SkipMask') || (nodeData.exists('SkipMask') && !match(nodeData.value('SkipMask'), treeNode.aotName())))
+    #                        {
+    #                            if (strContains(treeNode.AOTgetProperties(), ' ' + nodeData.value('Property')+' '))
+    #                            {
+    #                                try
+    #                                {
+    #                                    labelText = treeNode.AOTgetProperty(nodeData.value('Property'));
+    #                                }
+    #                                catch
+    #                                {
+    #                                    labelText = '';
+    #                                }
+    #                            }
+    #                            else
+    #                            {
+    #                                labelText = '';
+    #                            }
+    #
+    #                            labelComment = nodeData.exists('Comment') ? any2str(nodeData.value('Comment')) : '';
+    #
+    #                            if (labelText && !strStartsWith(labelText, '@'))
+    #                            {
+    #                                labelId = '';
+    #
+    #                                labelSet = sysLabelEdit.findEqualLabelSet('en-us', labelText, labelComment);
+    #
+    #                                if (labelSet && labelSet.elements() >= 1)
+    #                                {
+    #                                    se = labelSet.getEnumerator();
+    #                                    while (se.moveNext())
+    #                                    {
+    #                                        if ( (!labelId) || (conFind(labelPriority, subStr(se.current(), 2, 3)) > conFind(labelPriority, subStr(labelId, 2, 3))))
+    #                                        {
+    #                                            labelId = se.current();
+    #                                        }
+    #                                    }
+    #                                }
+    #
+    #                                if (! labelId)
+    #                                {
+    #                                    labelId = sysLabelEdit.labelInsert('en-us', labelText, labelComment, SysLabelApplModule::None, labelFile);
+    #                                }
+    #
+    #                                treeNode.AOTsetProperty(nodeData.value('Property'), labelId);
+    #                                treeNode.AOTsave();
+    #
+    #                                info(strFmt('New label created: L="%1" <> T="%2" <> C="%3". Label applied to %4', labelId, labelText, labelComment, treeNode.treeNodePath()));
+    #                            }
+    #                        }
+    #
+    #                        treeNode = treeNode.AOTnextSibling();
+    #
+    #                    } while (isChild && treeNode);
+    #                }
+    #            }
+    #        }
+    #
+    #        treeNodeTest = tnIt.next();
+    #
+    #        if (treeNodeTest)
+    #        {
+    #            projTreeNode = treeNodeTest;
+    #        }
+    #        else
+    #        {
+    #            if (nodeCnt && projNodeList.exists(nodeCnt))
+    #            {
+    #                projTreeNode = projNodeList.lookup(nodeCnt);
+    #                projNodeList.remove(nodeCnt);
+    #                nodeCnt--;
+    #                tnIt = projTreeNode.AOTiterator();
+    #                projTreeNode = tnIt.next();
+    #            }
+    #            else
+    #            {
+    #                projTreeNode = null;
+    #            }
+    #        }
+    #    }
+    #
+    #    info('Done.');
+    #}
+  ENDSOURCE
+  PROPERTIES
+    Origin              #{00000000-0000-0000-0000-000000000000}
+  ENDPROPERTIES
+  
+
+***Element: END
